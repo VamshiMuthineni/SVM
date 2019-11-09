@@ -5,7 +5,7 @@ classdef HW4_Utils
 % Last modified: 30-Sep-2018
 
     properties (Constant)        
-        dataDir = '../hw4data';
+        dataDir = '../hw4';
         
         % Anotated upper bodies have different sizes. To train a classifier, we need to normalize to
         % a standard size
@@ -145,7 +145,7 @@ classdef HW4_Utils
             % Display the top 4 detections if asked
             if exist('shldDisplay', 'var') && shldDisplay                
                 imshow(im);            
-                HW4_Utils.drawRects(rects(:,1:4));
+                HW4_Utils.drawRects(rects(:,1:10));
             end;
         end;
         
@@ -246,8 +246,8 @@ classdef HW4_Utils
                 % Remove random rects that overlap more than 30% with an annotated upper body
                 for j=1:size(ubs,2)
                     overlap = HW4_Utils.rectOverlap(randRects, ubs(:,j));                    
-                    randRects = randRects(:, overlap < 0.3);
-                    if isempty(randRects)
+                    randRects = randRects(:, overlap < 0.25);
+                    if ~isempty(randRects)
                         break;
                     end;
                 end;
@@ -269,6 +269,92 @@ classdef HW4_Utils
             D = cat(2, posD, negD);
             lb = [ones(size(posD,2),1); -ones(size(negD,2), 1)];
             imRegs = cat(4, posRegs{:}, negRegs{:});            
+        end;
+        
+        function [D_values, lb, imRegs] = extractHardNegatives(dataset,k,w,b)
+            rng(1234); % reset random generator. Keep same seed for repeatability
+            load(sprintf('%s/%sAnno.mat', HW4_Utils.dataDir, dataset), 'ubAnno');
+            [posD, negD, posRegs, negRegs] = deal(cell(1, length(ubAnno)));            
+            posRegs = {};
+            for i=1:length(ubAnno)
+                ml_progressBar(i, length(ubAnno), 'Processing image');
+                im = imread(sprintf('%s/%sIms/%04d.jpg', HW4_Utils.dataDir, dataset, i));
+                %im = rgb2gray(im);
+                ubs = ubAnno{i}; % annotated upper body
+%                 if ~isempty(ubs)
+%                     [D_i, R_i] = deal(cell(1, size(ubs,2)));
+%                     for j=1:length(D_i)
+%                         ub = ubs(:,j);
+%                         imReg = im(ub(2):ub(4), ub(1):ub(3),:);
+%                         imReg = imresize(imReg, HW4_Utils.normImSz);
+%                         D_i{j} = HW4_Utils.cmpFeat(rgb2gray(imReg));
+%                         R_i{j} = imReg;
+%                     end 
+%                     posD{i}    = cat(2, D_i{:});                    
+%                     posRegs{i} = cat(4, R_i{:});
+%                 end
+                
+                % sample k random patches; some will be used as negative exampels
+                % Choose k sufficiently large to ensure success
+                [imH, imW,~] = size(im);
+                randLeft = randi(imW, [1, k]);
+                randTop = randi(imH, [1, k]);
+                randSz = randi(min(imH, imW), [1, k]);
+                randRects = [randLeft; randTop; randLeft + randSz - 1; randTop + randSz - 1];
+                
+                % remove random rects that do not lie within image boundaries
+                badIdxs = or(randRects(3,:) > imW, randRects(4,:) > imH);
+                randRects = randRects(:,~badIdxs);
+                
+                % remove random rects that overlap more than 30% with an annotated upper body
+                for j=1:size(ubs,2)
+                    overlap = HW4_Utils.rectOverlap(randRects, ubs(:,j));                    
+                    randRects = randRects(:, overlap < 0.4);
+                    if isempty(randRects)
+                        break;
+                    end;
+                end;
+                
+                if isempty(randRects)
+                    continue;
+                end
+                
+                % Now extract features for some few random patches
+                [feats, no_rects] = size(randRects);
+%                 if no_rects>10
+%                     nNeg2SamplePerIm = 10;
+%                 else
+                  nNeg2SamplePerIm = no_rects;
+%                 end
+                %g = floor((numrec-10)*rand(1))+1;    
+                [D_i, R_i] = deal(cell(1, nNeg2SamplePerIm));
+                for j=no_rects-nNeg2SamplePerIm+1:no_rects
+                    imReg = im(randRects(2,j):randRects(4,j), randRects(1,j):randRects(3,j),:);
+                    imReg = imresize(imReg, HW4_Utils.normImSz);
+                    R_i{j} = imReg;
+                    D_i{j} = HW4_Utils.cmpFeat(rgb2gray(imReg));                    
+                end
+                negD{i} = cat(2, D_i{:});                
+                negRegs{i} = cat(4, R_i{:});
+            end    
+            posD = {};
+            negD = cat(2, negD{:});   
+            D = cat(2, posD, negD);
+            D = cat(2, D{:});
+            D = HW4_Utils.l2Norm(double(D));
+            scores = zeros(size(D,2),2);
+%             the scores part is taken from detec function.
+            for i = 1:size(D,2)
+                scores(i,1) = D(:,i)'*w + b;
+                scores(i,2) = i;
+            end
+            sorted_scores = sortrows(scores,1,'descend');
+            D_values = zeros(size(D,1),1000);
+            for i=1:size(D_values,2)
+                D_values(:,i) = D(:,sorted_scores(i,2));
+            end
+            lb = [ones(size(posD,2),1); -ones(size(negD,2), 1)];
+            imRegs = cat(4, posRegs{:}, negRegs{:});
         end;
                 
         % rects: 4*k or 5*k matrix for k rectangles, 
